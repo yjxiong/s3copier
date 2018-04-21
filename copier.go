@@ -22,6 +22,8 @@ import (
 
 var baseDir = flag.String("baseDir", "", "Directory to copy s3 contents to. (required)")
 var bucket = flag.String("bucket", "", "S3 Bucket to copy contents from. (required)")
+var prefix = flag.String("prefix", "", "S3 Bucket prefix (required)")
+var suffix = flag.String("suffix", "", "S3 Bucket suffix (required)")
 var concurrency = flag.Int("concurrency", 10, "Number of concurrent connections to use.")
 var queueSize = flag.Int("queueSize", 100, "Size of the queue")
 
@@ -38,10 +40,10 @@ func main() {
 	}
 	s3Client := s3.New(sess)
 
-	DownloadBucket(s3Client, *bucket, *baseDir, *concurrency, *queueSize)
+	DownloadBucket(s3Client, *bucket, *prefix, *suffix, *baseDir, *concurrency, *queueSize)
 }
 
-func DownloadBucket(client *s3.S3, bucket, baseDir string, concurrency, queueSize int) {
+func DownloadBucket(client *s3.S3, bucket, prefix, suffix, baseDir string, concurrency, queueSize int) {
 	keysChan := make(chan string, queueSize)
 	cpyr := &Copier{
 		client:  client,
@@ -70,15 +72,13 @@ func DownloadBucket(client *s3.S3, bucket, baseDir string, concurrency, queueSiz
 		}()
 	}
 
-	dc := &DirectoryCreator{baseDir: baseDir, dirsSeen: make(map[string]bool), newDirPermission: 0755}
-	req := &s3.ListObjectsV2Input{Bucket: aws.String(bucket)}
+	req := &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)}
 	err := client.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
 		for _, content := range resp.Contents {
 			key := *content.Key
-			if err := dc.MkDirIfNeeded(key); err != nil {
-				log.Fatalf("Failed to create directory for key %v due to %v", key, err)
+			if endsWith := strings.HasSuffix(key, suffix); endsWith == true{
+				keysChan <- key
 			}
-			keysChan <- key
 		}
 		return true
 	})
@@ -123,7 +123,9 @@ func (c *Copier) Copy(key string) (int64, error) {
 	}
 	defer op.Body.Close()
 
-	f, err := os.Create(path.Join(c.baseDir, key))
+	lastIdx := strings.LastIndex(key, "/")
+	file_name := key[(lastIdx+1):]
+	f, err := os.Create(path.Join(c.baseDir, file_name))
 	if err != nil {
 		io.Copy(ioutil.Discard, op.Body)
 		return 0, err
